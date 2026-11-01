@@ -2,7 +2,9 @@
 node_modules/
 
 # pi-local discovery and config
-.pi/
+.pi/*
+!.pi/pi-schematic/
+!.pi/pi-schematic/model-groups.json
 
 # Workshop evidence and snapshots
 workshop-artifacts/

@@ -1,0 +1,50 @@
+{
+  "version": 2,
+  "groups": {
+    "architecture-master": {
+      "models": [
+        {
+          "provider": "openai-codex",
+          "modelId": "gpt-6.1-sol",
+          "thinkingLevel": "high"
+        }
+      ]
+    },
+    "architecture-expert": {
+      "models": [
+        {
+          "provider": "openai-codex",
+          "modelId": "gpt-6.1-sol",
+          "thinkingLevel": "medium"
+        }
+      ]
+    },
+    "journey-group": {
+      "models": [
+        {
+          "provider": "openrouter",
+          "modelId": "inception/mercury-3",
+          "thinkingLevel": "high"
+        }
+      ]
+    },
+    "architecture-model": {
+      "models": [
+        {
+          "provider": "opencode-go",
+          "modelId": "glm-5.3-flash",
+          "thinkingLevel": "high"
+        }
+      ]
+    },
+    "architecture-stressor": {
+      "models": [
+        {
+          "provider": "opencode-go",
+          "modelId": "deepseek-v4.1-flash",
+          "thinkingLevel": "max"
+        }
+      ]
+    }
+  }
+}

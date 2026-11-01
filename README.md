@@ -53,7 +53,17 @@ Configuration (one JSON file path, optionally quoted):
 
 ## Model-group routing
 
-Each voice skill selects its group via `model-group:` frontmatter. Create a project `model-groups.json` under `.pi/pi-schematic/` (schema v2) with the five groups: `architecture-master`, `architecture-expert`, `journey-group`, `architecture-model`, `architecture-stressor`. A group picks a member at random per invocation; keep members' thinking levels comparable for consistent behavior. See the pi-schematic docs for schema details.
+Each voice skill selects its group via `model-group:` frontmatter. The canonical project-scoped groups ship with this repository at `.pi/pi-schematic/model-groups.json` (schema v2) and are read when pi boots from the project root. A consuming project copies that one file into its own `.pi/pi-schematic/model-groups.json` (or runs pi from this repository root directly). The shipped groups:
+
+| Group | Member(s) | Provider | Thinking |
+|---|---|---|---|
+| `architecture-master` | gpt-6.1-sol | openai-codex | high |
+| `architecture-expert` | gpt-6.1-sol | openai-codex | medium |
+| `journey-group` | mercury-3 | openrouter | high |
+| `architecture-model` | glm-5.3-flash | opencode-go | high |
+| `architecture-stressor` | deepseek-v4.1-flash | opencode-go | max |
+
+All groups are single-member, so selection is deterministic. Consumers may edit the copy (models/thinking are project policy); a missing file means no groups, and a selector referencing an unknown group blocks the turn.
 
 ## Human operator interface
 
