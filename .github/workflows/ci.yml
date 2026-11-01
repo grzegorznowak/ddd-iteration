@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-                - name: Run headless package tests
+      - name: Run headless package tests
         run: node --test test/*.test.mjs
       - name: Installer preflight (dry-run, scratch project)
         run: |
