@@ -15,8 +15,8 @@ This is the released form of the `architecture-iteration` package. Discovery ent
 
 ## What you get
 
-- A 9-turn round (agenda → explore ×3 → expert answer → challenge ×3 → synthesis) orchestrated as a pi workflow
-- Five canonical voice skills (`architecture-iteration-{master,expert,journey,model,stressor}`) for route model-group selection
+- A serial 9-turn round (agenda → explore ×3 → expert answer → challenge ×3 → synthesis), with a fresh context before every invocation
+- Five stable voice definitions (`architecture-iteration-{master,expert,journey,model,stressor}`), each with its own skill, model-group route and output contract
 - A deterministic artifact engine (`artifacts.mjs`): JSON-schema validation, SHA-256 snapshot lineage, question resolution, recover/inspect, and chunked transport (45 KiB shell packets, 4000-char chunks)
 - A symlink installer (`install.mjs`) with strict no-overwrite/no-delete preflight
 - No external npm dependencies; headless tests in `test/`
@@ -65,6 +65,24 @@ Each voice skill selects its group via `model-group:` frontmatter. The canonical
 
 All groups are single-member, so selection is deterministic. Consumers may edit the copy (models/thinking are project policy); a missing file means no groups, and a selector referencing an unknown group blocks the turn.
 
+## Independent voice contexts
+
+Before each of the nine invocations, the workflow calls `workflow.new()` and reasserts readonly mode. Voice definitions stay stable; conversation history does not. Continuity comes only from explicit artifacts, not raw prior conversations or private memory.
+
+Every invocation receives the exact captured source, cumulative human answers and complete current accepted artifacts in `snapshot`. Current-round sharing is limited to:
+
+| Invocation | Additional input |
+|---|---|
+| Master agenda | None |
+| Journey, Model, Stressor exploration | Agenda only; no sibling drafts |
+| Expert answer | Agenda and all three proposals |
+| Journey, Model, Stressor challenge | Agenda, all proposals and expert answers; no sibling challenges |
+| Master synthesis | Agenda, all proposals, expert answers and all challenges |
+
+Shared artifacts are data to assess, not replacement role instructions. A voice must not adopt another voice's persona. Synthesis preserves unresolved dissent and existing evidence, human-checkpoint and immutable-persistence requirements.
+
+Fresh contexts are not a security sandbox, statistical independence or parallel execution. All nine invocations remain serial. The layout has not been live-qualified; offline checks cannot establish model accuracy or persona adherence.
+
 ## Human operator interface
 
 - Checkpoints after each committed round expose `latest_snapshot`, `round`, and `disposition` — `continue`, `needs-human` (answer blocking questions), or `candidate` (milestone acceptance)
@@ -73,15 +91,15 @@ All groups are single-member, so selection is deterministic. Consumers may edit 
 
 ## Supported invocation topologies
 
-- Installed project symlink (`install.mjs --project ...`), started from that project root — required for routing and discovery
-- Direct canonical invocation from this repository root (`node .../architecture-iteration.js <config>`)
+- Installed project symlink: run `node /path/to/ddd-iteration/install.mjs` from the target project root, then use `/workflow architecture-iteration ./workshop.json` there
+- Canonical source: use `/workflow ./architecture-iteration.js ./workshop.json` from this repository root; voice skills must still be discoverable (run `node install.mjs` there)
 
 Copies, global paths, and arbitrary-path launches are unsupported by design: the workflow preflight requires the fixed project link or the canonical source root, and `artifacts.mjs` must remain a regular file beside the canonical workflow.
 
 ## Development
 
 ```bash
-node --test test/          # headless test suite
+node --test test/*.test.mjs # headless test suite
 node install.mjs --dry-run # installer preflight
 ```
 

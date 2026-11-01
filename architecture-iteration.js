@@ -163,6 +163,20 @@ return defineWorkflow((workflow) => {
     if (schemas.agenda?.type !== 'object' || schemas.participant?.type !== 'object' || schemas.expert?.type !== 'object' || schemas.synthesis?.type !== 'object') {
       throw new Error('Artifact shell returned invalid role schemas.');
     }
+    // Stable voice units own their skill route and output contract, not a private
+    // transcript. Continuity comes only from the explicit packets below. Do not
+    // use notebookWrite: its host-buffered previews can survive workflow.new().
+    const master = { prompt: '/skill:architecture-iteration-master', agenda: schemas.agenda, synthesis: schemas.synthesis };
+    const expertVoice = { prompt: '/skill:architecture-iteration-expert', schema: schemas.expert };
+    const participants = [];
+    for (const voice of ['journey', 'model', 'stressor']) {
+      participants.push({ voice, prompt: '/skill:architecture-iteration-' + voice,
+        // Constrain native submission before it settles. Keep the deterministic
+        // identity check too: an unexpected result must never be relabelled.
+        schema: { ...schemas.participant, properties: { ...schemas.participant.properties,
+          voice: { ...schemas.participant.properties.voice, enum: [voice] } } },
+      });
+    }
     workflow.readonly(entryReadonly);
     workflow.checkpoint({ phase: 'prepared', latest_snapshot: latest.path, round: latest.round });
 
@@ -196,15 +210,16 @@ return defineWorkflow((workflow) => {
       attempt = begun.attempt;
       const round = begun.round;
 
-      // A failed reset propagates to the ordinary failure path; never fall back
-      // to the previous conversation. This also resets BEFORE round one.
+      // Reset BEFORE EVERY invocation, including Master and Expert. A failed
+      // reset stops the round; never fall back to the previous conversation.
+      // Session replacement can drop readonly, so reassert it after every reset.
       phase = 'reset';
       workflow.new();
       workflow.readonly(true);
       phase = 'agenda';
-      const agendaRun = workflow.run('/skill:architecture-iteration-master', {
+      const agendaRun = workflow.run(master.prompt, {
         args: 'round-' + round + ' agenda', input: { round, phase: 'agenda', snapshot },
-        output: { schema: schemas.agenda },
+        output: { schema: master.agenda },
       });
       const agenda = structured(agendaRun);
       workflow.readonly(false);
@@ -221,11 +236,15 @@ return defineWorkflow((workflow) => {
       workflow.readonly(true);
 
       const proposals = [];
-      for (const voice of ['journey', 'model', 'stressor']) {
+      for (const unit of participants) {
+        const voice = unit.voice;
+        phase = 'reset-explore-' + voice;
+        workflow.new();
+        workflow.readonly(true);
         phase = 'explore-' + voice;
-        const proposalRun = workflow.run('/skill:architecture-iteration-' + voice, {
+        const proposalRun = workflow.run(unit.prompt, {
           args: 'round-' + round + ' explore', input: { round, phase: 'explore', snapshot, agenda },
-          output: { schema: schemas.participant },
+          output: { schema: unit.schema },
         });
         const proposal = structured(proposalRun);
         if (proposal.voice !== voice) throw new Error('Participant voice must equal ' + voice + '.');
@@ -244,10 +263,13 @@ return defineWorkflow((workflow) => {
         proposals.push(proposal);
       }
 
+      phase = 'reset-answer';
+      workflow.new();
+      workflow.readonly(true);
       phase = 'answer';
-      const expertRun = workflow.run('/skill:architecture-iteration-expert', {
+      const expertRun = workflow.run(expertVoice.prompt, {
         args: 'round-' + round + ' answer', input: { round, phase: 'answer', snapshot, agenda, proposals },
-        output: { schema: schemas.expert },
+        output: { schema: expertVoice.schema },
       });
       const expert = structured(expertRun);
       workflow.readonly(false);
@@ -264,11 +286,15 @@ return defineWorkflow((workflow) => {
       workflow.readonly(true);
 
       const challenges = [];
-      for (const voice of ['journey', 'model', 'stressor']) {
+      for (const unit of participants) {
+        const voice = unit.voice;
+        phase = 'reset-challenge-' + voice;
+        workflow.new();
+        workflow.readonly(true);
         phase = 'challenge-' + voice;
-        const challengeRun = workflow.run('/skill:architecture-iteration-' + voice, {
+        const challengeRun = workflow.run(unit.prompt, {
           args: 'round-' + round + ' challenge', input: { round, phase: 'challenge', snapshot, agenda, proposals, expert },
-          output: { schema: schemas.participant },
+          output: { schema: unit.schema },
         });
         const challenge = structured(challengeRun);
         if (challenge.voice !== voice) throw new Error('Participant voice must equal ' + voice + '.');
@@ -287,10 +313,13 @@ return defineWorkflow((workflow) => {
         challenges.push(challenge);
       }
 
+      phase = 'reset-synthesize';
+      workflow.new();
+      workflow.readonly(true);
       phase = 'synthesize';
-      const synthesisRun = workflow.run('/skill:architecture-iteration-master', {
+      const synthesisRun = workflow.run(master.prompt, {
         args: 'round-' + round + ' synthesize', input: { round, phase: 'synthesize', snapshot, agenda, proposals, expert, challenges },
-        output: { schema: schemas.synthesis },
+        output: { schema: master.synthesis },
       });
       const synthesis = structured(synthesisRun);
       phase = 'commit';

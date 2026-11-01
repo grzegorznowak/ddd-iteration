@@ -64,7 +64,7 @@ test('foreign project symlink runs real helper for two fresh deterministic round
   writeFileSync(join(decoy, 'artifacts.mjs'), "throw new Error('WRONG CWD COMPANION');\n");
   const result = installedRound(f);
   healthy(result);
-  assert.equal(result.calls.new, 2);
+  assert.equal(result.calls.new, 18);
   assert.equal(result.calls.run.length, 18);
   assert.equal(result.exit.round, 2);
   assert.equal(result.calls.readonly.at(-1), true);

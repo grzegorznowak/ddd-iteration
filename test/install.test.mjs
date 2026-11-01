@@ -178,7 +178,7 @@ test('actual installer links run a complete deterministic foreign-project round'
     },
   });
   healthy(result);
-  assert.equal(result.calls.new, 1);
+  assert.equal(result.calls.new, 9);
   assert.equal(result.calls.run.length, 9);
   assert.equal(result.exit.round, 1);
 });

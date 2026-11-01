@@ -311,10 +311,14 @@ export function validateArtifacts(artifacts, snapshot) {
   }
   assert(visited === ids.size, 'E_EVENT_FLOW', 'Strict precedence/causality relations contain a cycle.');
   const questionIds = new Set();
+  const questionTexts = new Set();
   const knownQuestions = new Map();
   for (const question of artifacts.open_questions) {
     assert(!questionIds.has(question.id), 'E_SCHEMA', `Duplicate question ID ${question.id}.`);
     questionIds.add(question.id);
+    const normalized = question.question.replace(/\s+/g, ' ').trim().toLowerCase();
+    assert(!questionTexts.has(normalized), 'E_SCHEMA', 'Verbatim duplicate question text within one synthesis is rejected.');
+    questionTexts.add(normalized);
     bindQuestion(knownQuestions, question.id, question.question);
   }
   for (const [index, row] of artifacts.question_resolutions.entries()) {

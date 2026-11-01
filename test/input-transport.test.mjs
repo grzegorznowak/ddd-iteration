@@ -68,13 +68,21 @@ test('large cumulative human revisions never travel in begin stdin and remain ex
   const config = resumeConfig(f, first.latest, { answers: [{ question_id: 'Q1', answer }] });
   const result = workflow(f, { args: config, output: bundle({ question: true }) });
   healthy(result, 'needs-human');
-  assert.equal(result.calls.run[0].options.input.snapshot.human_answers[0].answer, answer);
+  assert.equal(result.calls.new, 9);
+  for (const turn of result.calls.run) {
+    assert.equal(turn.options.input.snapshot.human_answers[0].answer, answer);
+    assert.equal(turn.options.input.snapshot.human_answers[0].question, 'Who can cancel an order?');
+    assert.equal(turn.options.input.snapshot.human_answers[0].attribution, 'human');
+  }
   assert.equal(readJSON(result.exit.latest_snapshot).human_answers[0].answer, answer);
   const next = workflow(f, { args: resumeConfig(f, { path: result.exit.latest_snapshot }, {
     answers: [{ question_id: 'Q1', answer: 'Second revision. ' + answer }], name: 'second-resume.json',
   }), output: bundle({ question: true }) });
   healthy(next, 'needs-human');
-  assert.deepEqual(readJSON(next.exit.latest_snapshot).human_answers.map((row) => row.answer), [answer, 'Second revision. ' + answer]);
+  assert.equal(next.calls.new, 9);
+  const expectedAnswers = readJSON(next.exit.latest_snapshot).human_answers;
+  assert.deepEqual(expectedAnswers.map((row) => row.answer), [answer, 'Second revision. ' + answer]);
+  for (const turn of next.calls.run) assert.deepEqual(turn.options.input.snapshot.human_answers, expectedAnswers);
   for (const result of [next]) {
     const begin = result.shellCalls.find(({ command }) => operationOf(command) === 'begin').command;
     assert.ok(begin.includes('input_ref'));

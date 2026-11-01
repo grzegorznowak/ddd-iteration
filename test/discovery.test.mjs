@@ -8,7 +8,7 @@ import { ROOT } from './support.mjs';
 
 // Optional, offline, without launching Pi or scanning user directories:
 // ARCHITECTURE_SKILL_LOADER=/absolute/pi-coding-agent/dist/core/skills.js \
-// node --test workflows/architecture-iteration/test/discovery.test.mjs
+// node --test test/discovery.test.mjs
 // Use the real installed module at an explicit path; no copied parser, live/global
 // installation or Pi/model launch. Retain temporary evidence, as in the other tests.
 const loaderPath = process.env.ARCHITECTURE_SKILL_LOADER;
@@ -20,7 +20,7 @@ test('actual selected Pi loader discovers all five skills through installed proj
   assert.equal(typeof loadSkillsFromDir, 'function');
   const { install } = await import('../install.mjs');
   const project = mkdtempSync(join(tmpdir(), 'architecture-discovery-'));
-  const packageRoot = realpathSync(join(ROOT, 'workflows/architecture-iteration'));
+  const packageRoot = realpathSync(ROOT);
   const expected = ['expert', 'journey', 'master', 'model', 'stressor'].map((voice) => `architecture-iteration-${voice}`);
   const result = install({ project });
   assert.equal(result.project, realpathSync(project));

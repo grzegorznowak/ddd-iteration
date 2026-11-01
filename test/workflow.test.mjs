@@ -29,7 +29,7 @@ function expectPreservedInitial(f, result, round = 0) {
   assert.equal(result.calls.notebook.length, 0);
 }
 
-for (const entryReadonly of [false, true]) test(`fresh-first/every-round nine-turn ordering; restore entry readonly=${entryReadonly}`, () => {
+for (const entryReadonly of [false, true]) test(`fresh context before every invocation; nine-turn ordering; restore entry readonly=${entryReadonly}`, () => {
   const f = fixture({ config: { max_rounds: 2 } });
   const resets = [];
   const result = workflow(f, { initialState: { readonly: entryReadonly, historySentinel: 'old-entry' },
@@ -41,18 +41,18 @@ for (const entryReadonly of [false, true]) test(`fresh-first/every-round nine-tu
     },
     runStub: (prompt, options, { calls, state }) => {
       assert.equal(state.readonly, true);
-      assert.equal(state.historySentinel, `fresh-${Math.ceil(calls.run.length / 9)}`);
+      assert.equal(state.historySentinel, `fresh-${calls.run.length}`);
       return stubOutput(prompt, options);
     },
   });
   healthy(result);
-  assert.equal(result.calls.new, 2);
-  assert.deepEqual(resets, [0, 9]);
+  assert.equal(result.calls.new, 18);
+  assert.deepEqual(resets, Array.from({ length: 18 }, (_, index) => index));
   assert.equal(result.calls.run.length, 18);
   assert.equal(result.exit.round, 2);
   assert.equal(result.calls.readonly.at(-1), entryReadonly);
   assert.deepEqual(result.calls.order.filter((x) => ['new', 'run'].includes(x.handle)).map((x) => x.handle), [
-    'new', ...Array(9).fill('run'), 'new', ...Array(9).fill('run'),
+    ...Array.from({ length: 18 }, () => ['new', 'run']).flat(),
   ]);
   for (let round = 1; round <= 2; round++) {
     const turns = result.calls.run.slice((round - 1) * 9, round * 9);
@@ -114,7 +114,7 @@ test('omitted cap permits exactly three new rounds, not one round per stage', ()
   writeJSON(f.configPath, { document: 'strategy.md', output: 'artifacts' });
   const result = workflow(f);
   healthy(result);
-  assert.equal(result.calls.new, 3);
+  assert.equal(result.calls.new, 27);
   assert.equal(result.calls.run.length, 27);
   assert.equal(result.exit.round, 3);
 });
@@ -145,7 +145,7 @@ test('resume from explicit file works without source, adds human evidence and pr
   const configPath = resumeConfig(f, first.latest, { answers: [{ question_id: 'Q1', answer: 'Human answer, not simulated consensus.' }], max_rounds: 2 });
   const result = workflow(f, { args: configPath, output: bundle({ question: true }) });
   healthy(result, 'needs-human');
-  assert.equal(result.calls.new, 1);
+  assert.equal(result.calls.new, 9);
   assert.equal(result.calls.run.length, 9);
   assert.equal(result.exit.round, 2);
   const input = result.calls.run[0].options.input.snapshot;
@@ -166,7 +166,7 @@ for (const disposition of ['continue', 'candidate']) test(`resume cannot silentl
   expectPreservedInitial(f, result, 1);
   assert.equal(result.exit.phase, 'commit');
   assert.match(result.exit.diagnostic, /Q1.*new.*resolution/i);
-  assert.equal(result.calls.new, 1);
+  assert.equal(result.calls.new, 9);
   assert.equal(result.calls.run.length, 9);
   assert.deepEqual(readFileSync(first.latest.path), before);
   assert.deepEqual(snapshots(f), ['round-0000.json', 'round-0001.json']);
@@ -195,7 +195,7 @@ test('resume closes with human evidence and carries the historical answer meanin
       return stubOutput(prompt, options, { synthesis: roleOutput('synthesis', { artifacts: closed }) });
     } });
   healthy(continued);
-  assert.equal(continued.calls.new, 1);
+  assert.equal(continued.calls.new, 9);
   assert.equal(continued.exit.round, 3);
 });
 
@@ -219,11 +219,11 @@ test('later reset failure preserves the previous completed round and stops befor
   const f = fixture({ config: { max_rounds: 2 } });
   const result = workflow(f, { newStub: ({ calls, state }) => {
     state.readonly = false;
-    if (calls.new === 2) throw new Error('second reset failed');
+    if (calls.new === 10) throw new Error('next-round reset failed');
   } });
   expectPreservedInitial(f, result, 1);
   assert.equal(result.calls.run.length, 9);
-  assert.equal(result.calls.new, 2);
+  assert.equal(result.calls.new, 10);
   assert.deepEqual(snapshots(f), ['round-0000.json', 'round-0001.json']);
 });
 
@@ -445,7 +445,7 @@ test('escaped source plus larger artifacts loads across packets without loss or 
   assert.ifError(result.error);
   healthy(result);
   assert.equal(result.exit.round, 2);
-  assert.equal(result.calls.new, 2);
+  assert.equal(result.calls.new, 18);
   assert.equal(result.calls.run.length, 18);
   const committed = readJSON(result.exit.latest_snapshot);
   assert.deepEqual(committed.artifacts, large);
@@ -460,7 +460,7 @@ test('load truncation after first round preserves committed round and does not r
   const result = workflow(f, { shellResultStub: (reply, command) => operationOf(command) === 'load' ? { ...reply, truncated: true } : reply });
   expectPreservedInitial(f, result, 1);
   assert.equal(result.exit.phase, 'load');
-  assert.equal(result.calls.new, 1);
+  assert.equal(result.calls.new, 9);
   assert.equal(result.calls.run.length, 9);
   assert.equal(result.checkpoints.at(-1).round, 1);
 });
