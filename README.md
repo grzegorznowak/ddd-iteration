@@ -4,6 +4,16 @@ A standalone, artifact-driven domain-design iteration workflow for [pi](https://
 
 This is the released form of the `architecture-iteration` package. Discovery entries in a consuming project are symlinks into this repository: one source of truth, no maintained copies.
 
+## Dependencies
+
+- **pi host** — the runtime that loads and runs the workflow. Developed against pi v1.4.0; any current 1.x should work, but pin what you validated.
+- **pi-schematic plugin** — provides `model-group:` frontmatter routing used by the five voice skills. Install the plugin from the branch currently validated by this package:
+  - repository: `https://github.com/chunkhound/pi-schematic` (installed agent copy)
+  - branch: `fix/36` — commit `aa9b325` — version `0.7.0`
+  - Install per pi-schematic's own instructions (plugin checkout under the pi agent directory, `git` layout as documented there). Do not rely on an npm-published copy: routing parity is validated against this pinned branch.
+- **model-groups config** — each consuming project must define the five groups under `.pi/pi-schematic/model-groups.json` (schema v2). See **Model-group routing** below.
+- Node.js 24 is used in CI; the artifact engine and installer use only Node built-ins (no external packages).
+
 ## What you get
 
 - A 9-turn round (agenda → explore ×3 → expert answer → challenge ×3 → synthesis) orchestrated as a pi workflow
