@@ -29,4 +29,4 @@ jobs:
           test -L .pi/skills/architecture-iteration-master
           node "$GITHUB_WORKSPACE/install.mjs"
       - name: No repo mutations by tests
-        run: git diff --exit-code && git status --porcelain | grep -q '^$'
+        run: git diff --exit-code && test -z "$(git status --porcelain)"
