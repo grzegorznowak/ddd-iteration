@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+                - name: Run headless package tests
+        run: node --test test/*.test.mjs
+      - name: Installer preflight (dry-run, scratch project)
+        run: |
+          rm -rf /tmp/ddd-iteration-scratch
+          mkdir -p /tmp/ddd-iteration-scratch
+          cd /tmp/ddd-iteration-scratch
+          node "$GITHUB_WORKSPACE/install.mjs" --dry-run
+      - name: Installer real link check (scratch project)
+        run: |
+          cd /tmp/ddd-iteration-scratch
+          node "$GITHUB_WORKSPACE/install.mjs"
+          test -L .pi/workflows/architecture-iteration.js
+          test -L .pi/skills/architecture-iteration-master
+          node "$GITHUB_WORKSPACE/install.mjs"
+      - name: No repo mutations by tests
+        run: git diff --exit-code && git status --porcelain | grep -q '^$'

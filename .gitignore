@@ -1,0 +1,19 @@
+# Dependencies / build artifacts
+node_modules/
+
+# pi-local discovery and config
+.pi/
+
+# Workshop evidence and snapshots
+workshop-artifacts/
+evidence/
+*.snapshot.json
+
+# Scratch, logs, temp
+tmp/
+*.log
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
