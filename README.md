@@ -2,7 +2,7 @@
 
 A standalone, artifact-driven domain-design iteration workflow for [pi](https://pi.dev). Five voices — Journey, Model, Stressor, Expert, Master — converge over rounds of evidence-disciplined exploration and challenge, producing structured DDD-style architecture artifacts gated by human answers and immutable snapshots.
 
-This is the released form of the `architecture-iteration` package. Discovery entries in a consuming project are symlinks into this repository: one source of truth, no maintained copies.
+This is the released form of the `architecture-iteration` package. In a consuming project, the workflow and its artifact companion are installed as regular copies (so the workflow appears in the pi host's `/workflows` TUI list, which ignores symlinked `.js` files); the five skills stay symlinks into this repository. One source of truth for the skills; the workflow/companion copies are refreshed by rerunning the installer (see below).
 
 ## Dependencies
 
@@ -18,7 +18,7 @@ This is the released form of the `architecture-iteration` package. Discovery ent
 - A serial 9-turn round (agenda → explore ×3 → expert answer → challenge ×3 → synthesis), with a fresh context before every invocation
 - Five stable voice definitions (`architecture-iteration-{master,expert,journey,model,stressor}`), each with its own skill, model-group route and output contract
 - A deterministic artifact engine (`artifacts.mjs`): JSON-schema validation, SHA-256 snapshot lineage, question resolution, recover/inspect, chunked transport (45 KiB shell packets, 4000-char chunks), and attempt-token resumable rounds (staged roles survive an interrupted run and are reused on resume)
-- A symlink installer (`install.mjs`) with strict no-overwrite/no-delete preflight
+- An installer (`install.mjs`) with strict no-overwrite/no-delete preflight: regular copies of the workflow and its artifact companion, symlinks for the skills
 - No external npm dependencies; headless tests in `test/`
 
 ## Install into a project
@@ -29,12 +29,13 @@ cd /path/to/your/project
 node ~/ddd-iteration/install.mjs
 ```
 
-The current working directory is the project — there is nothing else to decide. Start pi from this directory and reload resources after installation. The installer links:
+The current working directory is the project — there is nothing else to decide. Start pi from this directory and reload resources after installation. The installer writes:
 
-- `.pi/workflows/architecture-iteration.js` → canonical `architecture-iteration.js`
-- `.pi/skills/architecture-iteration-<voice>` → canonical skill directories
+- `.pi/workflows/architecture-iteration.js` → regular copy of canonical `architecture-iteration.js`
+- `.pi/workflows/artifacts.mjs` → regular copy of canonical `artifacts.mjs` (the workflow's shell companion)
+- `.pi/skills/architecture-iteration-<voice>` → symlink to canonical skill directories
 
-Run `node install.mjs --help` for flags. `--dry-run` checks everything without writing. Rerunning is safe and idempotent (links are reported `existing`).
+The workflow is a regular copy — not a symlink — so it appears in the `/workflows` TUI list; the host's list ignores symlinked `.js` files, though bare-name `/workflow architecture-iteration` resolution would still work. Skills stay symlinks: the skill loader follows them, so skill edits propagate from the canonical source. A previously installed correct workflow symlink (from older installer versions) is upgraded to the copy automatically on rerun. If you change the canonical workflow or companion, rerun the installer after removing the old `.pi/workflows` copies — an identical copy rerun reports `existing`; a different copy is a refused conflict. Run `node install.mjs --help` for flags; `--dry-run` checks everything without writing; rerunning is safe and idempotent.
 
 ## Run the workflow
 
@@ -92,10 +93,10 @@ Fresh contexts are not a security sandbox, statistical independence or parallel 
 
 ## Supported invocation topologies
 
-- Installed project symlink: run `node /path/to/ddd-iteration/install.mjs` from the target project root, then use `/workflow architecture-iteration ./workshop.json` there
+- Installed project: run `node /path/to/ddd-iteration/install.mjs` from the target project root; the workflow appears in the `/workflows` TUI list and is invocable as `/workflow architecture-iteration ./workshop.json` there
 - Canonical source: use `/workflow ./architecture-iteration.js ./workshop.json` from this repository root; voice skills must still be discoverable (run `node install.mjs` there)
 
-Copies, global paths, and arbitrary-path launches are unsupported by design: the workflow preflight requires the fixed project link or the canonical source root, and `artifacts.mjs` must remain a regular file beside the canonical workflow.
+Global paths and arbitrary-path launches are unsupported by design: the workflow preflight requires the fixed installed project copy or the canonical source root, and `artifacts.mjs` must sit beside the workflow entry.
 
 ## Development
 

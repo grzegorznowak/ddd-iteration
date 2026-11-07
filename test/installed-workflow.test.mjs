@@ -8,14 +8,22 @@ import { COMPANION, WORKFLOW, fixture, healthy, operationOf, readJSON, roleOutpu
 const installedName = '.pi/workflows/architecture-iteration.js';
 const packageName = 'workflows/architecture-iteration';
 
-// These tests build only the installer's fixed symlink interface. Installer
-// behavior/discovery has separate tests. No provider, Pi session, or skill loader
-// runs here; the real companion executes with deterministic role outputs.
+// These tests build the installer's workflow entry as either a legacy symlink
+// (linkProject) or a regular copy (copyProject). Installer behavior/discovery has
+// separate tests. No provider, Pi session, or skill loader runs here; the real
+// companion executes with deterministic role outputs.
 function linkProject(f, source = WORKFLOW) {
   const link = join(f.directory, installedName);
   mkdirSync(dirname(link), { recursive: true });
   symlinkSync(relative(dirname(link), source), link);
   return link;
+}
+function copyProject(f) {
+  const dir = dirname(join(f.directory, installedName));
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(WORKFLOW, join(dir, 'architecture-iteration.js'));
+  copyFileSync(COMPANION, join(dir, 'artifacts.mjs'));
+  return join(dir, 'architecture-iteration.js');
 }
 function packageFixture(f, name = 'canonical package', { helper = true } = {}) {
   const directory = join(f.directory, name);
@@ -121,12 +129,15 @@ test('broken installed link cannot fall back to an otherwise valid repository pa
   failedBeforeWrites(f, installedRound(f, { file: WORKFLOW }), /preflight failed/i);
 });
 
-test('installed ordinary file is refused even when it is byte-identical source', () => {
+test('installed regular copy runs a complete deterministic round', () => {
   const f = fixture();
-  const installed = join(f.directory, installedName);
-  mkdirSync(dirname(installed), { recursive: true });
-  copyFileSync(WORKFLOW, installed);
-  failedBeforeWrites(f, installedRound(f), /must be a symlink/i);
+  copyProject(f);
+  const result = installedRound(f);
+  healthy(result);
+  assert.equal(result.calls.new, 9);
+  assert.equal(result.calls.run.length, 9);
+  assert.equal(result.exit.round, 1);
+  assert.equal(result.exit.latest_snapshot, join(f.directory, 'artifacts', 'round-0001.json'));
 });
 
 test('installed target with a different filename is not a canonical package entry', () => {

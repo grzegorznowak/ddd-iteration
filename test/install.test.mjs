@@ -20,12 +20,22 @@ const cli = (args, cwd = PACKAGE) => spawnSync(process.execPath, [INSTALLER, ...
 
 function verifyLinks(root, result) {
   assert.equal(result.project, realpathSync(root));
-  assert.equal(result.links.length, 6);
-  const expected = [
-    [join(root, '.pi/workflows/architecture-iteration.js'), join(PACKAGE, 'architecture-iteration.js')],
-    ...NAMES.map((name) => [join(root, '.pi/skills', name), join(PACKAGE, 'skills', name)]),
-  ];
-  for (const [destination, source] of expected) {
+  assert.equal(result.links.length, 7);
+  // The workflow and its companion are regular copies so the host's /workflows
+  // list shows the workflow; skills stay symlinks.
+  const workflowDest = join(root, '.pi/workflows/architecture-iteration.js');
+  const workflowSource = join(PACKAGE, 'architecture-iteration.js');
+  const companionDest = join(root, '.pi/workflows/artifacts.mjs');
+  const companionSource = join(PACKAGE, 'artifacts.mjs');
+  for (const [destination, source] of [[workflowDest, workflowSource], [companionDest, companionSource]]) {
+    assert.ok(lstatSync(destination).isFile());
+    assert.equal(lstatSync(destination).isSymbolicLink(), false);
+    assert.equal(readFileSync(destination, 'utf8'), readFileSync(source, 'utf8'));
+    assert.ok(result.links.some((link) => link.source === source && link.destination === destination));
+  }
+  for (const name of NAMES) {
+    const destination = join(root, '.pi/skills', name);
+    const source = join(PACKAGE, 'skills', name);
     assert.ok(lstatSync(destination).isSymbolicLink());
     assert.equal(isAbsolute(readlinkSync(destination)), false, 'Discovery link is relative.');
     assert.equal(realpathSync(destination), source);
@@ -111,15 +121,34 @@ test('workflow conflict is not overwritten', () => {
   assert.equal(existsSync(join(root, '.pi/skills')), false);
 });
 
-test('equivalent absolute links are recognized, not replaced', () => {
+test('a correct legacy workflow symlink is upgraded to a regular copy on rerun', () => {
   const root = project();
   const destination = join(root, '.pi/workflows/architecture-iteration.js');
   mkdirSync(dirname(destination), { recursive: true });
   const source = join(PACKAGE, 'architecture-iteration.js');
-  symlinkSync(source, destination);
+  symlinkSync(relative(dirname(destination), source), destination);
   const result = install({ project: root });
-  assert.equal(result.links[0].status, 'existing');
-  assert.equal(readlinkSync(destination), source);
+  const workflow = result.links.find((link) => link.destination === destination);
+  assert.equal(workflow.status, 'upgraded');
+  assert.ok(lstatSync(destination).isFile());
+  assert.equal(lstatSync(destination).isSymbolicLink(), false);
+  assert.equal(readFileSync(destination, 'utf8'), readFileSync(source, 'utf8'));
+  assert.ok(lstatSync(join(root, '.pi/workflows/artifacts.mjs')).isFile());
+  for (const name of NAMES) assert.ok(lstatSync(join(root, '.pi/skills', name)).isSymbolicLink(), name);
+  const again = install({ project: root });
+  assert.ok(again.links.every((link) => link.status === 'existing'));
+});
+
+test('identical workflow copy rerun reports existing; a differing workflow copy conflicts', () => {
+  const root = project();
+  install({ project: root });
+  const destination = join(root, '.pi/workflows/architecture-iteration.js');
+  const second = install({ project: root });
+  const workflow = second.links.find((link) => link.destination === destination);
+  assert.equal(workflow.status, 'existing');
+  writeFileSync(destination, 'different workflow bytes');
+  assert.throws(() => install({ project: root }), /refusing to replace existing asset/);
+  assert.equal(readFileSync(destination, 'utf8'), 'different workflow bytes', 'conflicting copy untouched');
 });
 
 test('CLI installs into the current working directory and keeps shell characters inert', () => {

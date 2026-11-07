@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstatSync, mkdtempSync, realpathSync } from 'node:fs';
+import { lstatSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -25,15 +25,15 @@ test('actual selected Pi loader discovers all five skills through installed proj
   const result = install({ project });
   assert.equal(result.project, realpathSync(project));
   assert.equal(result.dryRun, false);
-  assert.equal(result.links.length, 6);
+  assert.equal(result.links.length, 7);
   assert.ok(result.links.every((link) => link.status === 'linked'));
-  for (const link of result.links) {
-    assert.ok(lstatSync(link.destination).isSymbolicLink(), link.destination);
-    assert.equal(realpathSync(link.destination), link.source);
-  }
-  const workflowLink = join(project, '.pi/workflows/architecture-iteration.js');
-  assert.ok(lstatSync(workflowLink).isSymbolicLink());
-  assert.equal(realpathSync(workflowLink), join(packageRoot, 'architecture-iteration.js'));
+  const workflowCopy = join(project, '.pi/workflows/architecture-iteration.js');
+  assert.ok(lstatSync(workflowCopy).isFile());
+  assert.equal(lstatSync(workflowCopy).isSymbolicLink(), false);
+  assert.equal(readFileSync(workflowCopy, 'utf8'), readFileSync(join(packageRoot, 'architecture-iteration.js'), 'utf8'));
+  const companionCopy = join(project, '.pi/workflows/artifacts.mjs');
+  assert.ok(lstatSync(companionCopy).isFile());
+  assert.equal(readFileSync(companionCopy, 'utf8'), readFileSync(join(packageRoot, 'artifacts.mjs'), 'utf8'));
   const dir = join(project, '.pi/skills');
   for (const name of expected) {
     const destination = join(dir, name);
