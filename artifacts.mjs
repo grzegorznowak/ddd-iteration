@@ -4,7 +4,7 @@
 // directories are incomplete drafts, never resume points. Nothing is deleted.
 import {
   constants, openSync, closeSync, readSync, readFileSync, writeFileSync, fstatSync, fsyncSync,
-  fchmodSync, lstatSync, realpathSync, mkdirSync, linkSync, readdirSync, existsSync,
+  fchmodSync, lstatSync, realpathSync, mkdirSync, linkSync, readdirSync, existsSync, renameSync, chmodSync,
 } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -206,6 +206,18 @@ function writeExclusive(path, raw) {
     fchmodSync(fd, 0o444);
     fsyncSync(fd);
   } finally { closeSync(fd); }
+}
+function writeReplace(path, raw) {
+  // Atomic overwrite for redo/stale replacement; the draft stays hidden until rename.
+  const draft = path + '.draft-' + randomUUID();
+  const fd = openSync(draft, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
+  try {
+    writeFileSync(fd, raw);
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  renameSync(draft, path);
+  chmodSync(path, 0o444);
+  syncDirectory(dirname(path));
 }
 function roundFile(round) {
   assert(Number.isSafeInteger(round) && round >= 0, 'E_SCHEMA', 'Round must be a nonnegative safe integer.');
@@ -516,10 +528,24 @@ function readConfig(configPath) {
   const resume = Object.hasOwn(value, 'resume');
   assert(start !== resume, 'E_CONFIG', 'Supply exactly one mode: document/output, or resume/optional answers.');
   try {
-    exactKeys(value, start ? ['document', 'output'] : ['resume'], start ? ['max_rounds'] : ['max_rounds', 'answers'], 'config');
+    exactKeys(value, start ? ['document', 'output'] : ['resume'],
+      start ? ['max_rounds'] : ['max_rounds', 'answers', 'attempt', 'redo'], 'config');
     for (const key of start ? ['document', 'output'] : ['resume']) pathText(value[key], `config.${key}`);
     if (Object.hasOwn(value, 'answers')) pathText(value.answers, 'config.answers');
+    if (Object.hasOwn(value, 'attempt')) pathText(value.attempt, 'config.attempt');
+    if (Object.hasOwn(value, 'redo')) {
+      assert(Array.isArray(value.redo) && value.redo.length > 0 && value.redo.every((slot) => slots.includes(slot)),
+        'E_CONFIG', 'redo must be a nonempty array of known role slots.');
+    }
   } catch (error) { fail('E_CONFIG', error.message); }
+  if (!start) {
+    if (Object.hasOwn(value, 'attempt') && Object.hasOwn(value, 'answers')) {
+      fail('E_CONFIG', 'attempt and answers are incompatible: a resumed in-progress round keeps the answers recorded in its attempt manifest.');
+    }
+    if (Object.hasOwn(value, 'redo') && !Object.hasOwn(value, 'attempt')) {
+      fail('E_CONFIG', 'redo requires attempt to identify the resumed in-progress round.');
+    }
+  }
   const maxRounds = Object.hasOwn(value, 'max_rounds') ? value.max_rounds : 3;
   assert(Number.isInteger(maxRounds) && maxRounds >= 1 && maxRounds <= 8, 'E_CONFIG', 'max_rounds must be an integer in 1..8.');
   return { config: value, directory: dirname(absolute), maxRounds };
@@ -551,11 +577,16 @@ export function prepare({ config_path }) {
   if (Object.hasOwn(config, 'resume')) {
     const loaded = readLineage(resolve(directory, config.resume));
     try {
-      const answers = Object.hasOwn(config, 'answers') ? applyAnswers(loaded, resolve(directory, config.answers)) : loaded.stored.human_answers;
-      const result = { latest: loaded.latest, snapshot: projectSnapshot(loaded.stored, answers), max_rounds: maxRounds };
+      // Validate the in-progress round before publishing its model projection.
+      // Pending revisions belong to that attempt, not the committed base.
+      const state = Object.hasOwn(config, 'attempt') ? readAttempt(resolve(directory, config.attempt)) : null;
+      if (state) sameLatest(state.manifest.base, loaded.latest);
+      const answers = state ? state.manifest.human_answers
+        : Object.hasOwn(config, 'answers') ? applyAnswers(loaded, resolve(directory, config.answers)) : loaded.stored.human_answers;
+      const result = { latest: loaded.latest, snapshot: projectSnapshot(loaded.stored, answers), max_rounds: maxRounds, attempt: state?.path ?? null, redo: config.redo ?? [] };
       return result;
     } catch (error) {
-      // A bad answer input does not invalidate the already-validated committed
+      // Bad answer/attempt input does not invalidate the validated committed
       // resume point. Expose its reference without promoting any pending answer.
       if (error instanceof ArtifactError) error.latest = loaded.latest;
       throw error;
@@ -582,7 +613,7 @@ export function prepare({ config_path }) {
   // The source itself never passes through a single shell reply.
   const expectedRaw = encoded(stored) + '\n';
   const latest = { path: join(output, roundFile(0)), sha256: sha256(expectedRaw), round: 0 };
-  const result = { latest, snapshot: projectSnapshot(stored), max_rounds: maxRounds };
+  const result = { latest, snapshot: projectSnapshot(stored), max_rounds: maxRounds, attempt: null, redo: [] };
   createOutputDirectory(output);
   const draft = join(output, `.initial-${randomUUID()}`);
   mkdirSync(draft, { mode: 0o700 });
@@ -608,7 +639,7 @@ export function begin({ latest, human_answers, input_ref }) {
   roundFile(round);
   const output = dirname(loaded.latest.path);
   const attempt = join(output, `.attempt-${randomUUID()}`);
-  const manifest = { schema_version: version, base: loaded.latest, round, human_answers };
+  const manifest = { schema_version: version, base: loaded.latest, round, human_answers, slots: {} };
   mkdirSync(attempt, { mode: 0o700 });
   writeExclusive(join(attempt, 'attempt.json'), encoded(manifest) + '\n');
   syncDirectory(attempt);
@@ -621,7 +652,7 @@ function readAttempt(attemptPath, { allowStale = false } = {}) {
   const stat = lstatSync(path);
   assert(stat.isDirectory() && !stat.isSymbolicLink(), 'E_INPUT', 'Attempt must be a real directory.');
   const { value: manifest } = readJson(join(path, 'attempt.json'), null, 'Attempt manifest');
-  exactKeys(manifest, ['schema_version', 'base', 'round', 'human_answers'], [], 'attempt');
+  exactKeys(manifest, ['schema_version', 'base', 'round', 'human_answers'], ['slots'], 'attempt');
   assert(manifest.schema_version === version, 'E_SCHEMA', 'Unsupported attempt schema_version.');
   validateLatest(manifest.base);
   assert(manifest.round === manifest.base.round + 1, 'E_LINEAGE', 'Attempt round does not follow its base.');
@@ -629,16 +660,78 @@ function readAttempt(attemptPath, { allowStale = false } = {}) {
   sameLatest(manifest.base, loaded.latest);
   assert(dirname(loaded.latest.path) === dirname(path), 'E_LINEAGE', 'Attempt directory is outside its snapshot directory.');
   validatePendingAnswers(loaded, manifest.human_answers);
-  return { path, manifest, loaded, snapshot: projectSnapshot(loaded.stored, manifest.human_answers) };
+  const slotsState = new Map();
+  for (const slot of slots) {
+    const entry = manifest.slots?.[slot];
+    const exists = existsSync(rolePath(path, slot));
+    const state = entry === undefined ? (exists ? 'staged' : 'missing') : entry.state;
+    slotsState.set(slot, { state, entry });
+  }
+  return { path, manifest, loaded, snapshot: projectSnapshot(loaded.stored, manifest.human_answers), slotsState };
 }
 function rolePath(attempt, slot) { return join(attempt, `role-${slot}.json`); }
+function readStagedRole(state, slot) {
+  const path = rolePath(state.path, slot);
+  assert(existsSync(path), 'E_ORDER', `Role ${slot} has not been staged.`);
+  const { value, raw } = readJson(path, null, `role ${slot}`);
+  const hash = sha256(raw);
+  const entry = state.manifest.slots?.[slot];
+  if (entry?.sha256) assert(hash === entry.sha256, 'E_LINEAGE', `Role ${slot} content hash mismatch.`);
+  return { path, value, text: decode(raw, `role ${slot}`), hash };
+}
 function requireRoleOrder(attempt, slot) {
   const position = slots.indexOf(slot);
   assert(position >= 0, 'E_SCHEMA', `Unknown role slot ${slot}.`);
   for (const [index, candidate] of slots.entries()) {
     const present = existsSync(rolePath(attempt, candidate));
-    assert(index < position ? present : !present, 'E_ORDER', `Role ${slot} is missing a predecessor or has already been recorded.`);
+    assert(index < position ? present : true, 'E_ORDER', `Role ${slot} is missing a predecessor.`);
   }
+}
+export function attemptStatus({ attempt }) {
+  const state = readAttempt(attempt, { allowStale: true });
+  const slotsStatus = [];
+  for (const [slot, { state: slotState }] of state.slotsState) slotsStatus.push({ slot, state: slotState });
+  return { attempt: state.path, round: state.manifest.round, base: state.manifest.base, slots: slotsStatus };
+}
+export function invalidateRoles({ attempt, slots: targets }) {
+  const state = readAttempt(attempt, { allowStale: true });
+  for (const target of targets) assert(slots.includes(target), 'E_SCHEMA', `Unknown role slot ${target}.`);
+  const manifest = state.manifest;
+  manifest.slots ??= {};
+  const targetSet = new Set(targets);
+  let mark = false;
+  for (const slot of slots) {
+    if (mark || targetSet.has(slot)) {
+      mark = true;
+      if (!existsSync(rolePath(state.path, slot))) continue;
+      manifest.slots[slot] = { state: 'stale' };
+    }
+  }
+  writeReplace(join(state.path, 'attempt.json'), encoded(manifest) + '\n');
+  return attemptStatus({ attempt: state.path });
+}
+export function readRole({ attempt, slot }) {
+  const state = readAttempt(attempt, { allowStale: true });
+  assert(slots.includes(slot), 'E_SCHEMA', `Unknown role slot ${slot}.`);
+  const role = readStagedRole(state, slot);
+  validateRole(slot, role.value, state.snapshot);
+  return { path: role.path, sha256: role.hash, length: role.text.length };
+}
+export function roleChunk({ role_ref, offset }) {
+  exactKeys(role_ref, ['path', 'sha256', 'length'], [], 'role_ref');
+  pathText(role_ref.path, 'role_ref.path');
+  assert(hashPattern.test(role_ref.sha256) && Number.isSafeInteger(role_ref.length) && role_ref.length > 0,
+    'E_INPUT', 'Invalid staged-role descriptor.');
+  assert(/^role-[a-z-]+\.json$/.test(basename(role_ref.path)) && /^\.attempt-[0-9a-f-]{36}$/.test(basename(dirname(role_ref.path))),
+    'E_INPUT', 'Invalid staged-role filename.');
+  assert(Number.isSafeInteger(offset) && offset >= 0 && offset < role_ref.length,
+    'E_INPUT', 'Staged-role packet offset must be within the role.');
+  const raw = readBytes(role_ref.path, null, 'Staged role');
+  assert(sha256(raw) === role_ref.sha256, 'E_LINEAGE', 'Staged-role content hash mismatch.');
+  const text = decode(raw, 'Staged role');
+  assert(text.length === role_ref.length, 'E_LINEAGE', 'Staged-role length mismatch.');
+  const portion = text.slice(offset, offset + limits.input_chunk);
+  return { offset, next: offset + portion.length, length: text.length, sha256: role_ref.sha256, text: portion };
 }
 export function stage({ attempt, slot, output, output_ref }) {
   const state = readAttempt(attempt);
@@ -646,8 +739,23 @@ export function stage({ attempt, slot, output, output_ref }) {
   assert(slot !== 'synthesis', 'E_ORDER', 'Use finish to validate synthesis and commit the complete round.');
   if (output_ref !== undefined) output = readOutput(output_ref, state.path, slot);
   validateRole(slot, output, state.snapshot);
-  writeExclusive(rolePath(state.path, slot), encoded(output) + '\n');
+  const entry = state.manifest.slots?.[slot];
+  const exists = existsSync(rolePath(state.path, slot));
+  const isStale = entry?.state === 'stale';
+  if (exists && !isStale) {
+    fail('E_ORDER', `Role ${slot} has already been staged; invalidate it first to redo.`);
+  }
+  const raw = encoded(output) + '\n';
+  if (exists && isStale) {
+    writeReplace(rolePath(state.path, slot), raw);
+  } else {
+    writeExclusive(rolePath(state.path, slot), raw);
+  }
   syncDirectory(state.path);
+  const manifest = state.manifest;
+  manifest.slots ??= {};
+  manifest.slots[slot] = { state: 'staged', sha256: sha256(raw) };
+  writeReplace(join(state.path, 'attempt.json'), encoded(manifest) + '\n');
   return { round: state.manifest.round, slot };
 }
 export function finish({ attempt, output, output_ref }) {
@@ -655,11 +763,20 @@ export function finish({ attempt, output, output_ref }) {
   requireRoleOrder(state.path, 'synthesis');
   if (output_ref !== undefined) output = readOutput(output_ref, state.path, 'synthesis');
   validateRole('synthesis', output, state.snapshot);
+  for (const slot of slots) {
+    const entry = state.manifest.slots?.[slot];
+    assert(entry?.state !== 'stale', 'E_ORDER', `Role ${slot} is stale; rerun or invalidate it before finish.`);
+  }
   const recorded = new Map();
   for (const slot of slots.slice(0, -1)) {
-    const { value } = readJson(rolePath(state.path, slot), null, `role ${slot}`);
+    const { value } = readStagedRole(state, slot);
     validateRole(slot, value, state.snapshot);
     recorded.set(slot, value);
+  }
+  const synthesisPath = rolePath(state.path, 'synthesis');
+  if (existsSync(synthesisPath)) {
+    const authored = readStagedRole(state, 'synthesis');
+    assert(encoded(output) === encoded(authored.value), 'E_LINEAGE', 'Synthesis output does not match the authored staged synthesis.');
   }
   const gated = deriveDisposition(output);
   const stored = {
@@ -673,8 +790,16 @@ export function finish({ attempt, output, output_ref }) {
     previous: { file: basename(state.loaded.latest.path), sha256: state.loaded.latest.sha256 },
   };
   validateSnapshot(stored);
-  writeExclusive(rolePath(state.path, 'synthesis'), encoded(output) + '\n');
+  // Author the synthesis role atomically (overwrite-safe): an interruption after
+  // the write but before the exclusive commit must not strand the attempt on a
+  // retried finish.
+  const synthesisRaw = encoded(output) + '\n';
+  writeReplace(synthesisPath, synthesisRaw);
   syncDirectory(state.path);
+  const manifest = state.manifest;
+  manifest.slots ??= {};
+  manifest.slots['synthesis'] = { state: 'staged', sha256: sha256(synthesisRaw) };
+  writeReplace(join(state.path, 'attempt.json'), encoded(manifest) + '\n');
   // Recheck lineage immediately before the exclusive commit. Concurrent attempts
   // can still race here; link's exclusive destination decides the single winner.
   const current = readLineage(state.manifest.base.path);
@@ -847,6 +972,10 @@ export function dispatch(operation, request) {
     case 'output-begin': exactKeys(request, ['attempt', 'slot', 'length'], [], 'request'); return outputBegin(request);
     case 'output-chunk': exactKeys(request, ['upload', 'offset', 'text', 'previous'], [], 'request'); return outputChunk(request);
     case 'stage': outputRequest(request, ['attempt', 'slot']); return stage(request);
+    case 'attempt-status': exactKeys(request, ['attempt'], [], 'request'); return attemptStatus(request);
+    case 'invalidate-roles': exactKeys(request, ['attempt', 'slots'], [], 'request'); return invalidateRoles(request);
+    case 'role-read': exactKeys(request, ['attempt', 'slot'], [], 'request'); return readRole(request);
+    case 'role-chunk': exactKeys(request, ['role_ref', 'offset'], [], 'request'); return roleChunk(request);
     case 'finish': {
       outputRequest(request, ['attempt']);
       const { latest, disposition } = finish(request);
@@ -859,7 +988,7 @@ export function dispatch(operation, request) {
       return { latest, disposition };
     }
     case 'inspect': exactKeys(request, ['config_path'], [], 'request'); return inspect(request);
-    default: fail('E_INPUT', 'Use schemas, prepare, input, begin, output-begin, output-chunk, stage, finish, load, recover, or inspect.');
+    default: fail('E_INPUT', 'Use schemas, prepare, input, begin, output-begin, output-chunk, stage, attempt-status, invalidate-roles, role-read, role-chunk, finish, load, recover, or inspect.');
   }
 }
 export function main(operation = process.argv[2]) {

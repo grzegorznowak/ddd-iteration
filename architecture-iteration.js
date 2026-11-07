@@ -60,6 +60,13 @@ return defineWorkflow((workflow) => {
     }
     return value;
   };
+  const roleReference = (value) => {
+    if (!value || typeof value.path !== 'string' || !value.path || !/^[a-f0-9]{64}$/.test(value.sha256 || '') ||
+        !Number.isSafeInteger(value.length) || value.length < 1 || Object.keys(value).length !== 3) {
+      throw new Error('Artifact shell returned an invalid staged-role descriptor.');
+    }
+    return value;
+  };
   const projection = (value, expectedRound) => {
     if (!value || value.schema_version !== 1 || value.round !== expectedRound || typeof value.source?.text !== 'string' ||
         !/^[a-f0-9]{64}$/.test(value.source?.sha256 || '') || !Array.isArray(value.human_answers) ||
@@ -158,6 +165,8 @@ return defineWorkflow((workflow) => {
     latest = reference(prepared.latest);
     let inputRef = inputReference(prepared.input_ref);
     if (!Number.isInteger(prepared.max_rounds) || prepared.max_rounds < 1 || prepared.max_rounds > 8) throw new Error('Artifact shell returned an invalid round cap.');
+    let configAttempt = prepared.attempt ?? null;
+    let configRedo = Array.isArray(prepared.redo) ? prepared.redo : [];
     const schemaShell = workflow.shell(command('schemas', {}), { timeout: 30 });
     const schemas = reply(schemaShell);
     if (schemas.agenda?.type !== 'object' || schemas.participant?.type !== 'object' || schemas.expert?.type !== 'object' || schemas.synthesis?.type !== 'object') {
@@ -201,146 +210,132 @@ return defineWorkflow((workflow) => {
       let decoded;
       try { decoded = JSON.parse(parts.join('')); } catch { throw new Error('Complete input projection is not valid JSON or exceeds host memory/string limits; no partial input was used.'); }
       const snapshot = projection(decoded, latest.round);
-      phase = 'begin';
-      const beginShell = workflow.shell(command('begin', { latest, input_ref: inputRef }), { timeout: 30 });
-      const begun = reply(beginShell);
-      if (typeof begun.attempt !== 'string' || !begun.attempt || begun.round !== latest.round + 1 || typeof begun.next_snapshot !== 'string') {
-        throw new Error('Artifact shell returned an invalid round attempt.');
-      }
-      attempt = begun.attempt;
-      const round = begun.round;
 
-      // Reset BEFORE EVERY invocation, including Master and Expert. A failed
-      // reset stops the round; never fall back to the previous conversation.
-      // Session replacement can drop readonly, so reassert it after every reset.
-      phase = 'reset';
-      workflow.new();
-      workflow.readonly(true);
-      phase = 'agenda';
-      const agendaRun = workflow.run(master.prompt, {
-        args: 'round-' + round + ' agenda', input: { round, phase: 'agenda', snapshot },
-        output: { schema: master.agenda },
-      });
-      const agenda = structured(agendaRun);
-      workflow.readonly(false);
-      const agendaWire = JSON.stringify(agenda);
-      const agendaUploadShell = workflow.shell(command('output-begin', { attempt, slot: 'agenda', length: agendaWire.length }), { timeout: 30 });
-      const agendaUpload = uploadReference(reply(agendaUploadShell), attempt, 'agenda', agendaWire.length);
-      for (let offset = 0; offset < agendaWire.length; offset += 4000) {
-        const text = agendaWire.slice(offset, offset + 4000);
-        const chunkShell = workflow.shell(command('output-chunk', { upload: agendaUpload.path, offset, text, previous: agendaUpload.tail }), { timeout: 30 });
-        uploaded(reply(chunkShell), agendaUpload, offset, text);
+      // Resume an in-progress round by attempt token, or begin a fresh one. A
+      // resumed attempt reuses its staged roles and only runs the missing/stale
+      // remainder; redo invalidates the named slot and all dependents.
+      let round;
+      let slotsState = new Map();
+      if (configAttempt) {
+        phase = 'attempt-status';
+        const statusShell = workflow.shell(command('attempt-status', { attempt: configAttempt }), { timeout: 30 });
+        const status = reply(statusShell);
+        if (status.round !== latest.round + 1 || status.base?.path !== latest.path || status.base?.sha256 !== latest.sha256) {
+          throw new Error('Artifact shell returned an attempt that does not continue the latest committed snapshot.');
+        }
+        attempt = status.attempt;
+        round = status.round;
+        for (const row of status.slots) slotsState.set(row.slot, row.state);
+        if (configRedo.length) {
+          phase = 'invalidate-roles';
+          const invalidateShell = workflow.shell(command('invalidate-roles', { attempt, slots: configRedo }), { timeout: 30 });
+          const invalidated = reply(invalidateShell);
+          slotsState = new Map(invalidated.slots.map((row) => [row.slot, row.state]));
+        }
+      } else {
+        phase = 'begin';
+        const beginShell = workflow.shell(command('begin', { latest, input_ref: inputRef }), { timeout: 30 });
+        const begun = reply(beginShell);
+        if (typeof begun.attempt !== 'string' || !begun.attempt || begun.round !== latest.round + 1 || typeof begun.next_snapshot !== 'string') {
+          throw new Error('Artifact shell returned an invalid round attempt.');
+        }
+        attempt = begun.attempt;
+        round = begun.round;
       }
-      const agendaShell = workflow.shell(command('stage', { attempt, slot: 'agenda', output_ref: agendaUpload }), { timeout: 30 });
-      staged(agendaShell, round, 'agenda');
-      workflow.readonly(true);
+      workflow.checkpoint({ phase: 'round-begin', attempt, round: latest.round, latest_snapshot: latest.path });
 
-      const proposals = [];
-      for (const unit of participants) {
-        const voice = unit.voice;
-        phase = 'reset-explore-' + voice;
+      // Turn table: slot order is fixed; voice/prompt/schema/input derive per turn.
+      // Inputs are read lazily from staged outputs so a resumed round rebuilds
+      // packets exactly as the canonical order would.
+      const proposalsFor = () => ['journey', 'model', 'stressor'].map((voice) => outputs.get('explore-' + voice));
+      const challengesFor = () => ['journey', 'model', 'stressor'].map((voice) => outputs.get('challenge-' + voice));
+      const turns = [
+        { slot: 'agenda', prompt: master.prompt, args: 'agenda', schema: master.agenda, input: () => ({ round, phase: 'agenda', snapshot }) },
+        { slot: 'explore-journey', prompt: participants[0].prompt, args: 'explore', schema: participants[0].schema, voice: 'journey', input: () => ({ round, phase: 'explore', snapshot, agenda: outputs.get('agenda') }) },
+        { slot: 'explore-model', prompt: participants[1].prompt, args: 'explore', schema: participants[1].schema, voice: 'model', input: () => ({ round, phase: 'explore', snapshot, agenda: outputs.get('agenda') }) },
+        { slot: 'explore-stressor', prompt: participants[2].prompt, args: 'explore', schema: participants[2].schema, voice: 'stressor', input: () => ({ round, phase: 'explore', snapshot, agenda: outputs.get('agenda') }) },
+        { slot: 'expert', prompt: expertVoice.prompt, args: 'answer', schema: expertVoice.schema, input: () => ({ round, phase: 'answer', snapshot, agenda: outputs.get('agenda'), proposals: proposalsFor() }) },
+        { slot: 'challenge-journey', prompt: participants[0].prompt, args: 'challenge', schema: participants[0].schema, voice: 'journey', input: () => ({ round, phase: 'challenge', snapshot, agenda: outputs.get('agenda'), proposals: proposalsFor(), expert: outputs.get('expert') }) },
+        { slot: 'challenge-model', prompt: participants[1].prompt, args: 'challenge', schema: participants[1].schema, voice: 'model', input: () => ({ round, phase: 'challenge', snapshot, agenda: outputs.get('agenda'), proposals: proposalsFor(), expert: outputs.get('expert') }) },
+        { slot: 'challenge-stressor', prompt: participants[2].prompt, args: 'challenge', schema: participants[2].schema, voice: 'stressor', input: () => ({ round, phase: 'challenge', snapshot, agenda: outputs.get('agenda'), proposals: proposalsFor(), expert: outputs.get('expert') }) },
+        { slot: 'synthesis', prompt: master.prompt, args: 'synthesize', schema: master.synthesis, input: () => ({ round, phase: 'synthesize', snapshot, agenda: outputs.get('agenda'), proposals: proposalsFor(), expert: outputs.get('expert'), challenges: challengesFor() }) },
+      ];
+
+      const outputs = new Map();
+      let synthesisRef = null; // fresh synthesis upload binding; resumed synthesis is read from staging
+      for (const turn of turns) {
+        const state = slotsState.get(turn.slot) ?? 'missing';
+        if (state === 'staged') {
+          phase = 'role-read-' + turn.slot;
+          const roleShell = workflow.shell(command('role-read', { attempt, slot: turn.slot }), { timeout: 30 });
+          const roleRef = roleReference(reply(roleShell));
+          const parts = [];
+          let roleOffset = 0;
+          while (roleOffset < roleRef.length) {
+            const chunkShell = workflow.shell(command('role-chunk', { role_ref: roleRef, offset: roleOffset }), { timeout: 30 });
+            const part = reply(chunkShell);
+            if (part.offset !== roleOffset || part.length !== roleRef.length || part.sha256 !== roleRef.sha256 ||
+                typeof part.text !== 'string' || part.text.length < 1 || part.text.length > 4000 ||
+                part.next !== roleOffset + part.text.length || part.next > roleRef.length) {
+              throw new Error('Artifact shell returned an incomplete or inconsistent staged-role packet.');
+            }
+            parts.push(part.text);
+            roleOffset = part.next;
+          }
+          let stagedRole;
+          try { stagedRole = JSON.parse(parts.join('')); } catch { throw new Error('Staged role is not valid JSON; cannot resume the round.'); }
+          if (!stagedRole || typeof stagedRole !== 'object' || Array.isArray(stagedRole)) {
+            throw new Error('Staged role is not a native structured object; cannot resume the round.');
+          }
+          outputs.set(turn.slot, stagedRole);
+          continue;
+        }
+        phase = 'reset-' + turn.slot;
         workflow.new();
         workflow.readonly(true);
-        phase = 'explore-' + voice;
-        const proposalRun = workflow.run(unit.prompt, {
-          args: 'round-' + round + ' explore', input: { round, phase: 'explore', snapshot, agenda },
-          output: { schema: unit.schema },
+        phase = turn.slot;
+        const run = workflow.run(turn.prompt, {
+          args: 'round-' + round + ' ' + turn.args, input: turn.input(),
+          output: { schema: turn.schema },
         });
-        const proposal = structured(proposalRun);
-        if (proposal.voice !== voice) throw new Error('Participant voice must equal ' + voice + '.');
+        const output = structured(run);
+        if (turn.voice && output.voice !== turn.voice) throw new Error('Participant voice must equal ' + turn.voice + '.');
         workflow.readonly(false);
-        const proposalWire = JSON.stringify(proposal);
-        const proposalUploadShell = workflow.shell(command('output-begin', { attempt, slot: 'explore-' + voice, length: proposalWire.length }), { timeout: 30 });
-        const proposalUpload = uploadReference(reply(proposalUploadShell), attempt, 'explore-' + voice, proposalWire.length);
-        for (let offset = 0; offset < proposalWire.length; offset += 4000) {
-          const text = proposalWire.slice(offset, offset + 4000);
-          const chunkShell = workflow.shell(command('output-chunk', { upload: proposalUpload.path, offset, text, previous: proposalUpload.tail }), { timeout: 30 });
-          uploaded(reply(chunkShell), proposalUpload, offset, text);
+        const wire = JSON.stringify(output);
+        const uploadShell = workflow.shell(command('output-begin', { attempt, slot: turn.slot, length: wire.length }), { timeout: 30 });
+        const upload = uploadReference(reply(uploadShell), attempt, turn.slot, wire.length);
+        for (let chunkOffset = 0; chunkOffset < wire.length; chunkOffset += 4000) {
+          const text = wire.slice(chunkOffset, chunkOffset + 4000);
+          const chunkShell = workflow.shell(command('output-chunk', { upload: upload.path, offset: chunkOffset, text, previous: upload.tail }), { timeout: 30 });
+          uploaded(reply(chunkShell), upload, chunkOffset, text);
         }
-        const proposalShell = workflow.shell(command('stage', { attempt, slot: 'explore-' + voice, output_ref: proposalUpload }), { timeout: 30 });
-        staged(proposalShell, round, 'explore-' + voice);
-        workflow.readonly(true);
-        proposals.push(proposal);
-      }
-
-      phase = 'reset-answer';
-      workflow.new();
-      workflow.readonly(true);
-      phase = 'answer';
-      const expertRun = workflow.run(expertVoice.prompt, {
-        args: 'round-' + round + ' answer', input: { round, phase: 'answer', snapshot, agenda, proposals },
-        output: { schema: expertVoice.schema },
-      });
-      const expert = structured(expertRun);
-      workflow.readonly(false);
-      const expertWire = JSON.stringify(expert);
-      const expertUploadShell = workflow.shell(command('output-begin', { attempt, slot: 'expert', length: expertWire.length }), { timeout: 30 });
-      const expertUpload = uploadReference(reply(expertUploadShell), attempt, 'expert', expertWire.length);
-      for (let offset = 0; offset < expertWire.length; offset += 4000) {
-        const text = expertWire.slice(offset, offset + 4000);
-        const chunkShell = workflow.shell(command('output-chunk', { upload: expertUpload.path, offset, text, previous: expertUpload.tail }), { timeout: 30 });
-        uploaded(reply(chunkShell), expertUpload, offset, text);
-      }
-      const expertShell = workflow.shell(command('stage', { attempt, slot: 'expert', output_ref: expertUpload }), { timeout: 30 });
-      staged(expertShell, round, 'expert');
-      workflow.readonly(true);
-
-      const challenges = [];
-      for (const unit of participants) {
-        const voice = unit.voice;
-        phase = 'reset-challenge-' + voice;
-        workflow.new();
-        workflow.readonly(true);
-        phase = 'challenge-' + voice;
-        const challengeRun = workflow.run(unit.prompt, {
-          args: 'round-' + round + ' challenge', input: { round, phase: 'challenge', snapshot, agenda, proposals, expert },
-          output: { schema: unit.schema },
-        });
-        const challenge = structured(challengeRun);
-        if (challenge.voice !== voice) throw new Error('Participant voice must equal ' + voice + '.');
-        workflow.readonly(false);
-        const challengeWire = JSON.stringify(challenge);
-        const challengeUploadShell = workflow.shell(command('output-begin', { attempt, slot: 'challenge-' + voice, length: challengeWire.length }), { timeout: 30 });
-        const challengeUpload = uploadReference(reply(challengeUploadShell), attempt, 'challenge-' + voice, challengeWire.length);
-        for (let offset = 0; offset < challengeWire.length; offset += 4000) {
-          const text = challengeWire.slice(offset, offset + 4000);
-          const chunkShell = workflow.shell(command('output-chunk', { upload: challengeUpload.path, offset, text, previous: challengeUpload.tail }), { timeout: 30 });
-          uploaded(reply(chunkShell), challengeUpload, offset, text);
+        if (turn.slot === 'synthesis') {
+          synthesisRef = upload; // finish consumes synthesis via output_ref; never staged
+        } else {
+          const stageShell = workflow.shell(command('stage', { attempt, slot: turn.slot, output_ref: upload }), { timeout: 30 });
+          staged(stageShell, round, turn.slot);
         }
-        const challengeShell = workflow.shell(command('stage', { attempt, slot: 'challenge-' + voice, output_ref: challengeUpload }), { timeout: 30 });
-        staged(challengeShell, round, 'challenge-' + voice);
         workflow.readonly(true);
-        challenges.push(challenge);
+        outputs.set(turn.slot, output);
       }
 
-      phase = 'reset-synthesize';
-      workflow.new();
-      workflow.readonly(true);
-      phase = 'synthesize';
-      const synthesisRun = workflow.run(master.prompt, {
-        args: 'round-' + round + ' synthesize', input: { round, phase: 'synthesize', snapshot, agenda, proposals, expert, challenges },
-        output: { schema: master.synthesis },
-      });
-      const synthesis = structured(synthesisRun);
       phase = 'commit';
       workflow.readonly(false);
-      const synthesisWire = JSON.stringify(synthesis);
-      const synthesisUploadShell = workflow.shell(command('output-begin', { attempt, slot: 'synthesis', length: synthesisWire.length }), { timeout: 30 });
-      const synthesisUpload = uploadReference(reply(synthesisUploadShell), attempt, 'synthesis', synthesisWire.length);
-      for (let offset = 0; offset < synthesisWire.length; offset += 4000) {
-        const text = synthesisWire.slice(offset, offset + 4000);
-        const chunkShell = workflow.shell(command('output-chunk', { upload: synthesisUpload.path, offset, text, previous: synthesisUpload.tail }), { timeout: 30 });
-        uploaded(reply(chunkShell), synthesisUpload, offset, text);
-      }
-      const committedShell = workflow.shell(command('finish', { attempt, output_ref: synthesisUpload }), { timeout: 30 });
+      const synthesis = outputs.get('synthesis');
+      const committedShell = workflow.shell(command('finish', {
+        attempt,
+        ...(synthesisRef ? { output_ref: synthesisRef } : { output: synthesis }),
+      }), { timeout: 30 });
       const committed = reply(committedShell);
       const committedReference = reference(committed.latest);
-      if (committedReference.round !== round || committedReference.path !== begun.next_snapshot ||
+      if (committedReference.round !== round ||
           !['continue', 'needs-human', 'candidate'].includes(committed.disposition) || Object.keys(committed).length !== 2) {
         throw new Error('Artifact shell returned an invalid committed-round packet.');
       }
       latest = committedReference;
       attempt = null;
+      configAttempt = null;
+      configRedo = [];
       workflow.readonly(entryReadonly);
       workflow.checkpoint({ phase: 'committed', latest_snapshot: latest.path, round: latest.round, disposition: committed.disposition });
       if (committed.disposition !== 'continue') {
@@ -361,6 +356,7 @@ return defineWorkflow((workflow) => {
       }
     }
     if (!outcome) outcome = { reason: 'round-limit', diagnostic: 'Invocation round cap reached; resume from the latest committed snapshot.' };
+    if (attempt) outcome = { ...outcome, attempt };
   } catch (error) {
     // A commit may succeed just before transport fails. Recover a small validated
     // reference, never guess that a draft or a failed reply is a committed round.
@@ -381,6 +377,7 @@ return defineWorkflow((workflow) => {
       } catch { /* Preparation may have failed before creating any snapshot. */ }
     }
     outcome = { reason: error?.reason === 'needs-input' ? 'needs-input' : 'failed', diagnostic: String(error?.message || error).slice(0, 4096), phase };
+    if (attempt) outcome = { ...outcome, attempt };
   } finally {
     // Cancellation can terminate the VM before finally executes. See README.
     workflow.readonly(entryReadonly);

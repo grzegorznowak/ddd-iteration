@@ -17,7 +17,7 @@ This is the released form of the `architecture-iteration` package. Discovery ent
 
 - A serial 9-turn round (agenda → explore ×3 → expert answer → challenge ×3 → synthesis), with a fresh context before every invocation
 - Five stable voice definitions (`architecture-iteration-{master,expert,journey,model,stressor}`), each with its own skill, model-group route and output contract
-- A deterministic artifact engine (`artifacts.mjs`): JSON-schema validation, SHA-256 snapshot lineage, question resolution, recover/inspect, and chunked transport (45 KiB shell packets, 4000-char chunks)
+- A deterministic artifact engine (`artifacts.mjs`): JSON-schema validation, SHA-256 snapshot lineage, question resolution, recover/inspect, chunked transport (45 KiB shell packets, 4000-char chunks), and attempt-token resumable rounds (staged roles survive an interrupted run and are reused on resume)
 - A symlink installer (`install.mjs`) with strict no-overwrite/no-delete preflight
 - No external npm dependencies; headless tests in `test/`
 
@@ -48,8 +48,9 @@ Configuration (one JSON file path, optionally quoted):
 
 - Start: `{ "document": "strategy.md", "output": "workshop-artifacts", "max_rounds": 3 }`
 - Resume: `{ "resume": "workshop-artifacts/round-0001.json", "max_rounds": 3, "answers": "answers.json" }`
+- Resume an interrupted round: `{ "resume": "workshop-artifacts/round-0000.json", "attempt": "workshop-artifacts/.attempt-<uuid>", "redo": ["explore-model"] }`
 
-`max_rounds` is an integer in 1..8 (default 3). Resume accepts explicit human answers as `[{ "question_id": "Q1", "answer": "..." }]`; unknown/duplicate IDs are errors. Answers become attributed human evidence (`human:Q1:r1`), never model claims.
+`max_rounds` is an integer in 1..8 (default 3). Resume accepts explicit human answers as `[{ "question_id": "Q1", "answer": "..." }]`; unknown/duplicate IDs are errors. Answers become attributed human evidence (`human:Q1:r1`), never model claims. The `attempt` token (printed in `round-begin` checkpoints and failure diagnostics) is the path of the unfinished round's durable staging directory; already-staged roles are reused, only missing roles run. Supply `redo` (a nonempty array of role slots) only together with `attempt`; it invalidates a slot and all of its dependents so they are re-run. Staged roles are read back in the same bounded hash-checked chunks used for inputs, so large staged roles resume intact. `answers` is incompatible with `attempt`: a resumed in-progress round keeps the answers recorded in its attempt manifest. Retrying `finish` after an interruption is safe — the synthesis role is replaced atomically rather than rejected because a partial write exists.
 
 ## Model-group routing
 
@@ -59,7 +60,7 @@ Each voice skill selects its group via `model-group:` frontmatter. The canonical
 |---|---|---|---|
 | `architecture-master` | gpt-6.1-sol | openai-codex | high |
 | `architecture-expert` | gpt-6.1-sol | openai-codex | medium |
-| `journey-group` | mercury-3 | openrouter | high |
+| `journey-group` | mercury-3 | vercel | high |
 | `architecture-model` | glm-5.3-flash | opencode-go | high |
 | `architecture-stressor` | deepseek-v4.1-flash | opencode-go | max |
 

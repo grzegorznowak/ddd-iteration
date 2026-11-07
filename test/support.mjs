@@ -73,9 +73,11 @@ export function commitRound(prepared, output) {
   const staged = stageRound(prepared, output);
   return { ...staged, committed: staged.finish() };
 }
-export function resumeConfig(f, latest, { answers, max_rounds = 1, name = 'resume.json' } = {}) {
+export function resumeConfig(f, latest, { answers, max_rounds = 1, name = 'resume.json', attempt, redo } = {}) {
   const configPath = join(f.directory, name);
   const config = { resume: latest.path, max_rounds };
+  if (attempt !== undefined) config.attempt = attempt;
+  if (redo !== undefined) config.redo = redo;
   if (answers !== undefined) {
     const path = join(f.directory, `${name}.answers.json`);
     writeJSON(path, answers);

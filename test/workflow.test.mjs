@@ -86,7 +86,7 @@ for (const entryReadonly of [false, true]) test(`fresh context before every invo
     assert.equal(Object.hasOwn(projected, 'previous'), false);
     assert.deepEqual(projected.source, stored.source);
   }
-  assert.deepEqual(result.checkpoints.map((x) => [x.phase, x.round]), [['prepared', 0], ['committed', 1], ['committed', 2]]);
+  assert.deepEqual(result.checkpoints.map((x) => [x.phase, x.round]), [['prepared', 0], ['round-begin', 0], ['committed', 1], ['round-begin', 1], ['committed', 2]]);
   for (const checkpoint of result.checkpoints) {
     assert.ok(existsSync(checkpoint.latest_snapshot));
     assert.equal(readJSON(checkpoint.latest_snapshot).round, checkpoint.round);
@@ -206,13 +206,13 @@ for (const entryReadonly of [false, true]) test(`reset failure makes zero model 
     throw new Error('replacement runtime missing');
   } });
   expectPreservedInitial(f, result);
-  assert.equal(result.exit.phase, 'reset');
+  assert.equal(result.exit.phase, 'reset-agenda');
   assert.match(result.exit.diagnostic, /replacement runtime missing/);
   assert.equal(result.calls.new, 1);
   assert.equal(result.calls.run.length, 0);
   assert.equal(result.calls.readonly.at(-1), entryReadonly);
   assert.deepEqual(snapshots(f), ['round-0000.json']);
-  assert.deepEqual(result.checkpoints.map((x) => x.phase), ['prepared']);
+  assert.deepEqual(result.checkpoints.map((x) => x.phase), ['prepared', 'round-begin']);
 });
 
 test('later reset failure preserves the previous completed round and stops before another role', () => {
@@ -424,7 +424,7 @@ for (const [name, corrupt] of [
   assert.equal(result.calls.run.length, 9);
   assert.equal(operationOf(result.shellCalls.at(-1).command), 'recover');
   assert.deepEqual(readFileSync(join(f.outputPath, 'round-0000.json')), initialRaw);
-  assert.deepEqual(result.checkpoints.map((x) => x.phase), ['prepared']);
+  assert.deepEqual(result.checkpoints.map((x) => x.phase), ['prepared', 'round-begin']);
 });
 
 test('failed commit-reply recovery retains last confirmed ref and preserves actual committed evidence', () => {
