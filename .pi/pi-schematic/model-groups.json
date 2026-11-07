@@ -22,7 +22,7 @@
     "journey-group": {
       "models": [
         {
-          "provider": "openrouter",
+          "provider": "vercel-ai-gateway",
           "modelId": "inception/mercury-3",
           "thinkingLevel": "high"
         }
