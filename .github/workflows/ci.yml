@@ -25,7 +25,10 @@ jobs:
         run: |
           cd /tmp/ddd-iteration-scratch
           node "$GITHUB_WORKSPACE/install.mjs"
-          test -L .pi/workflows/architecture-iteration.js
+          test -f .pi/workflows/architecture-iteration.js
+          test ! -L .pi/workflows/architecture-iteration.js
+          test -f .pi/workflows/artifacts.mjs
+          test ! -L .pi/workflows/artifacts.mjs
           test -L .pi/skills/architecture-iteration-master
           node "$GITHUB_WORKSPACE/install.mjs"
       - name: No repo mutations by tests
